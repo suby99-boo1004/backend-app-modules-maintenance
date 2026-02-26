@@ -1,24 +1,31 @@
 from __future__ import annotations
 
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Optional, List
+
+from pydantic import BaseModel
+
+
+class MaintenanceCreateIn(BaseModel):
+    title: str
+    requester_name: str
+    requester_org: str
+    requester_phone: str
+    request_content: str
 
 
 class MaintenanceListItem(BaseModel):
     id: int
-    requested_at: str
+    requested_at: datetime
     title: str
-    requester_name: str
-    requester_org: str
+    requester_name: str = ""
+    requester_org: str = ""
     created_by_name: str = ""
 
 
-class MaintenanceCreateIn(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200, description="유지보수명")
-    requester_name: str = Field(..., min_length=1, max_length=100, description="요청자")
-    requester_org: str = Field(..., min_length=1, max_length=120, description="요청자 소속")
-    requester_phone: str = Field(..., min_length=1, max_length=50, description="연락처")
-    request_content: str = Field(..., min_length=1, description="요청 내용")
+class MaintenanceCompleteIn(BaseModel):
+    resolution_content: str
+    assignee_user_ids: List[int] = []
 
 
 class AssigneeOut(BaseModel):
@@ -29,8 +36,8 @@ class AssigneeOut(BaseModel):
 class MaintenanceDetailOut(BaseModel):
     id: int
     title: str
-    requested_at: str
-    closed_at: Optional[str] = None
+    requested_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
 
     created_by_user_id: Optional[int] = None
     created_by_name: str = ""
@@ -43,7 +50,14 @@ class MaintenanceDetailOut(BaseModel):
     resolution_content: Optional[str] = None
     assignees: List[AssigneeOut] = []
 
+    # 첨부파일 메타
+    attachment_name: Optional[str] = None
+    attachment_path: Optional[str] = None
+    attachment_mime: Optional[str] = None
+    attachment_size: Optional[int] = None
 
-class MaintenanceCompleteIn(BaseModel):
-    resolution_content: str = Field(..., min_length=1, description="처리 내용(필수)")
-    assignee_user_ids: List[int] = Field(default_factory=list, description="처리 참여자(복수) user_id 목록")
+    # 다운로드 URL (서버 경로 노출 방지)
+    attachment_download_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
