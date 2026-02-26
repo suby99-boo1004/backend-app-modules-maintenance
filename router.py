@@ -290,3 +290,25 @@ def complete_maintenance(
     from .service import MaintenanceService
 
     return MaintenanceService(db).complete(ticket_id=ticket_id, actor_user_id=user_id, payload=payload)
+
+
+@router.post("/{ticket_id}/reopen", response_model=MaintenanceDetailOut)
+def reopen_maintenance(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """완료된 유지보수를 다시 진행중으로 변경 (대표님 요구)
+    - 버튼 노출은 프론트에서 제어하되, 백엔드에서도 권한 체크 수행
+    - 완료 시 선택했던 참여 직원 목록 초기화
+    """
+    from .service import MaintenanceService
+
+    try:
+        item = MaintenanceService(db).reopen(ticket_id=ticket_id, actor_user_id=user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    if not item:
+        raise HTTPException(status_code=404, detail="유지보수 내역을 찾을 수 없습니다.")
+    return item
