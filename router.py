@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from typing import List, Optional, Literal
+
 from pathlib import Path
 import uuid
-import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -41,6 +42,58 @@ def _ensure_admin(db: Session, user_id: int) -> None:
         raise HTTPException(status_code=403, detail="관리자만 사용할 수 있습니다.")
 
 
+class AssigneeUserOut(BaseModel):
+    id: int
+    name: str
+    department_id: Optional[int] = None
+    status: Optional[str] = None
+    role_id: int
+
+
+@router.get("/assignees", response_model=List[AssigneeUserOut])
+def list_assignees_for_maintenance_complete(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """처리완료 담당자/참여자 선택용 직원 목록
+
+    대표님 요구:
+    - role.id(=users.role_id) 가 6,7,8 인 사용자만 반환
+      (관리자/운영자/회사직원)
+    - status 는 active 인 것만
+    - id 오름차순
+    """
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              u.id,
+              u.name,
+              u.department_id,
+              u.status,
+              u.role_id
+            FROM public.users u
+            WHERE u.status = 'active'
+              AND u.role_id IN (6, 7, 8)
+            ORDER BY u.id ASC
+            """
+        )
+    ).mappings().all()
+
+    # NOTE: 권한 제한은 '목록 조회' 자체는 로그인 사용자면 허용.
+    # (요구사항에 관리자 제한 언급 없음. 필요하면 대표님 지시에 맞춰 변경)
+    return [
+        AssigneeUserOut(
+            id=int(r["id"]),
+            name=str(r.get("name") or ""),
+            department_id=(int(r["department_id"]) if r.get("department_id") is not None else None),
+            status=(str(r.get("status")) if r.get("status") is not None else None),
+            role_id=int(r["role_id"]),
+        )
+        for r in rows
+    ]
+
+
 @router.get("", response_model=List[MaintenanceListItem])
 def list_maintenance(
     year: int = Query(..., description="년도(예: 2026). 월/일 검색 없음."),
@@ -49,6 +102,7 @@ def list_maintenance(
     db: Session = Depends(get_db),
 ):
     from .service import MaintenanceService
+
     return MaintenanceService(db).list(year=year, tab=tab, q=q)
 
 
@@ -59,6 +113,7 @@ def create_maintenance(
     user_id: int = Depends(get_current_user_id),
 ):
     from .service import MaintenanceService
+
     return MaintenanceService(db).create(user_id, payload)
 
 
@@ -68,6 +123,7 @@ def get_maintenance_detail(
     db: Session = Depends(get_db),
 ):
     from .service import MaintenanceService
+
     item = MaintenanceService(db).get_detail(ticket_id)
     if not item:
         raise HTTPException(status_code=404, detail="유지보수 내역을 찾을 수 없습니다.")
@@ -86,7 +142,7 @@ async def upload_attachment(
     - 1개, 20MB 이하
     """
     filename = file.filename or ""
-    ext = filename[filename.rfind("."):].lower() if "." in filename else ""
+    ext = filename[filename.rfind(".") :].lower() if "." in filename else ""
     allowed = {".zip", ".pdf", ".png", ".jpg"}
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="허용되지 않는 파일 형식입니다. (.zip, .pdf, .png, .jpg)")
@@ -94,6 +150,7 @@ async def upload_attachment(
     max_bytes = 20 * 1024 * 1024
     size = 0
     chunks: list[bytes] = []
+
     while True:
         chunk = await file.read(1024 * 1024)
         if not chunk:
@@ -119,11 +176,12 @@ async def upload_attachment(
             text(
                 """
                 UPDATE public.maintenance_tickets
-                SET attachment_name = :attachment_name,
-                    attachment_path = :attachment_path,
-                    attachment_mime = :attachment_mime,
-                    attachment_size = :attachment_size,
-                    updated_at = now()
+                SET
+                  attachment_name = :attachment_name,
+                  attachment_path = :attachment_path,
+                  attachment_mime = :attachment_mime,
+                  attachment_size = :attachment_size,
+                  updated_at = now()
                 WHERE id = :id
                 """
             ),
@@ -138,6 +196,7 @@ async def upload_attachment(
         db.commit()
     except Exception:
         db.rollback()
+        raise
 
     return {
         "ok": True,
@@ -172,6 +231,7 @@ def download_attachment(
         raise HTTPException(status_code=404, detail="첨부파일이 없습니다.")
 
     raw_path = str(row["attachment_path"])
+
     # 보안: 업로드 루트 밖으로 나가면 차단
     uploads_root = (Path(__file__).resolve().parents[2] / "uploads").resolve()
     file_path = Path(raw_path).resolve()
@@ -195,7 +255,6 @@ def delete_maintenance(
     user_id: int = Depends(get_current_user_id),
 ):
     """유지보수 삭제 (관리자만)
-
     - maintenance_ticket_assignees 선삭제 후 maintenance_tickets 삭제
     - 첨부파일(uploads)은 이번 단계에서는 삭제하지 않음(요청 사항 아님)
     """
@@ -215,7 +274,6 @@ def delete_maintenance(
         db.rollback()
         raise HTTPException(status_code=500, detail="삭제에 실패했습니다.")
 
-    # sqlalchemy Result.rowcount may be None depending on driver
     if getattr(res, "rowcount", 1) == 0:
         raise HTTPException(status_code=404, detail="유지보수 내역을 찾을 수 없습니다.")
 
@@ -230,4 +288,5 @@ def complete_maintenance(
     user_id: int = Depends(get_current_user_id),
 ):
     from .service import MaintenanceService
+
     return MaintenanceService(db).complete(ticket_id=ticket_id, actor_user_id=user_id, payload=payload)
