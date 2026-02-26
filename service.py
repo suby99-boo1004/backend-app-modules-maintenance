@@ -324,3 +324,65 @@ class MaintenanceService:
             raise
 
         return self.get_detail(ticket_id)
+
+    def reopen(self, ticket_id: int, actor_user_id: Optional[int]) -> Optional[MaintenanceDetailOut]:
+        """완료(CLOSED) 상태를 진행중(IN_PROGRESS)으로 되돌리고, 완료 처리 시 선택했던 참여직원 목록을 초기화합니다."""
+        # 티켓 존재 + 등록자 확인
+        row = self.db.execute(
+            text("SELECT id, created_by_user_id FROM public.maintenance_tickets WHERE id=:id"),
+            {"id": ticket_id},
+        ).mappings().first()
+        if not row:
+            return None
+
+        created_by = row.get("created_by_user_id")
+        actor = actor_user_id
+
+        # 관리자 여부 확인(roles.code == 'ADMIN')
+        is_admin = False
+        if actor is not None:
+            r = self.db.execute(
+                text(
+                    """
+                    SELECT r.code::text AS role_code
+                    FROM public.users u
+                    JOIN public.roles r ON r.id = u.role_id
+                    WHERE u.id = :id
+                    """
+                ),
+                {"id": actor},
+            ).mappings().first()
+            is_admin = bool(r and str(r.get("role_code") or "") == "ADMIN")
+
+        # 권한: 관리자 OR 등록자
+        if not is_admin:
+            if actor is None or created_by is None or int(created_by) != int(actor):
+                raise ValueError("권한이 없습니다.")
+
+        try:
+            # 참여직원 초기화(완료 처리 때 선택된 직원 목록 삭제)
+            self.db.execute(
+                text("DELETE FROM public.maintenance_ticket_assignees WHERE ticket_id=:id"),
+                {"id": ticket_id},
+            )
+
+            # 상태를 진행중으로 변경 + closed_at NULL
+            self.db.execute(
+                text(
+                    """
+                    UPDATE public.maintenance_tickets
+                    SET status='IN_PROGRESS',
+                        closed_at=NULL,
+                        updated_at=now()
+                    WHERE id=:id
+                    """
+                ),
+                {"id": ticket_id},
+            )
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return self.get_detail(ticket_id)
